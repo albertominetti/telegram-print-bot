@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=USER
+User=1000
 WorkingDirectory=/opt/telegram-print-bot
 
 # --- uv venv (default) ---
@@ -14,8 +14,7 @@ ExecStart=/opt/telegram-print-bot/.venv/bin/python bot.py
 Restart=always
 RestartSec=10
 
-# Bot token injected via environment (safer than hardcoding)
-Environment=TELEGRAM_BOT_TOKEN="???????"
+EnvironmentFile=/opt/telegram-print-bot/config.env
 
 StandardOutput=journal
 StandardError=journal
