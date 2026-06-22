@@ -4,12 +4,13 @@ A Telegram bot that receives PDFs and images, asks for confirmation, and sends t
 
 ## Prerequisites
 
+- **Linux-like OS** (Raspberry too)
 - **Python 3.14+**
 - **[uv](https://docs.astral.sh/uv/)** (recommended) or another way to create a virtualenv and install dependencies
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - System tools used at runtime:
-  - **CUPS mode:** `lp` (`cups-client` on Debian/Ubuntu)
-  - **Samba mode:** `smbclient` (`smbclient` package)
+  - **CUPS mode:** (`cups-client` on Debian/Ubuntu)
+  - **Samba mode:** (`smbclient` package)
   - **PDF checks:** handled in Python via `pikepdf` (no extra system packages)
 
 On Debian/Ubuntu:
