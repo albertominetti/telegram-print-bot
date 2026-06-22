@@ -10,12 +10,12 @@ A Telegram bot that receives PDFs and images, asks for confirmation, and sends t
 - System tools used at runtime:
   - **CUPS mode:** `lp` (`cups-client` on Debian/Ubuntu)
   - **Samba mode:** `smbclient` (`smbclient` package)
-  - **PDF checks:** `pdfinfo` and `pdftoppm` (`poppler-utils`)
+  - **PDF checks:** handled in Python via `pikepdf` (no extra system packages)
 
 On Debian/Ubuntu:
 
 ```bash
-sudo apt install cups-client poppler-utils smbclient
+sudo apt install cups-client smbclient
 ```
 
 ## Installation

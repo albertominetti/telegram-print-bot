@@ -126,42 +126,17 @@ def is_pdf_file(doc) -> bool:
 
 def is_pdf_print_blocked(pdf_path: str) -> bool:
     """True when the PDF needs a password or has printing disabled."""
-    info = run_cmd(["pdfinfo", pdf_path])
-    combined = info.stdout + info.stderr
-    if info.returncode != 0 and "password" in combined.lower():
-        logger.info("PDF blocked: pdfinfo requires password")
-        return True
-
-    encrypted = False
-    for line in info.stdout.splitlines():
-        if not line.startswith("Encrypted:"):
-            continue
-        normalized = line.lower().replace(" ", "")
-        if "encrypted:yes" in normalized:
-            encrypted = True
-        if "print:no" in normalized:
-            logger.info("PDF blocked: printing disabled in PDF permissions")
-            return True
-
     try:
         with pikepdf.open(pdf_path) as pdf:
             if pdf.is_encrypted and not pdf.allow.print_lowres and not pdf.allow.print_highres:
-                logger.info("PDF blocked: pikepdf print permissions denied")
+                logger.info("PDF blocked: print permissions denied")
                 return True
     except pikepdf.PasswordError:
-        logger.info("PDF blocked: pikepdf requires password")
+        logger.info("PDF blocked: password required")
         return True
-
-    if not encrypted:
-        return False
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        prefix = os.path.join(tmpdir, "page")
-        render = run_cmd(["pdftoppm", "-f", "1", "-l", "1", "-png", pdf_path, prefix])
-        if render.returncode != 0 and "password" in (render.stdout + render.stderr).lower():
-            logger.info("PDF blocked: pdftoppm requires password")
-            return True
-
+    except pikepdf.PdfError as exc:
+        logger.info("PDF blocked: unreadable PDF (%s)", exc)
+        return True
     return False
 
 
@@ -417,4 +392,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
