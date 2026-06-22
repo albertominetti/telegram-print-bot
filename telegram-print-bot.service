@@ -1,0 +1,25 @@
+[Unit]
+Description=Telegram PDF Print Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USER
+WorkingDirectory=/opt/telegram-print-bot
+
+# --- uv venv (default) ---
+ExecStart=/opt/telegram-print-bot/.venv/bin/python bot.py
+
+Restart=always
+RestartSec=10
+
+# Bot token injected via environment (safer than hardcoding)
+Environment=TELEGRAM_BOT_TOKEN="???????"
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-print-bot
+
+[Install]
+WantedBy=multi-user.target
