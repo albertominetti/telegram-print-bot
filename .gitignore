@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# Secrets and local config (keep *.example tracked)
+config.env
+.env
+.env.*
+!.env.example
+!config.env.example
+
+# Local backups
+*.bak
+*.bak-*
+
+# Test / sample files
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and runtime
+*.log
