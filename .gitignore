@@ -40,3 +40,5 @@ Thumbs.db
 
 # Logs and runtime
 *.log
+selected_printer
+selected_printer.tmp
