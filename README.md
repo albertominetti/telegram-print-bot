@@ -79,6 +79,31 @@ You must also configure **one** print backend:
 | `SAMBA_USER` | Windows username. |
 | `SAMBA_PASSWORD` | Windows password. |
 
+### Optional: Wake-on-LAN
+
+If a Windows PC that **shares** the printer is often asleep, the bot can send a magic packet when you tap **Print**, wait until the host is reachable, then submit the job. This only helps for a **wired** Ethernet NIC on that PC. A printer with its own IP does not need this — print to the printer instead.
+
+| Variable | Description |
+|----------|-------------|
+| `WOL_MACS` | Ethernet MAC of the PC to wake. Parallel to `PRINTERS` (empty slot = skip), or `name=MAC` pairs, e.g. `xerox=AA:BB:CC:DD:EE:FF`. |
+| `WOL_HOSTS` | IP/hostname used to detect that the PC is up (TCP 445 / 139, then ping). Parallel to `PRINTERS` or `name=host`. If omitted, the bot uses `lpstat -v` for CUPS, or `SAMBA_HOST` in Samba mode. |
+| `SAMBA_WOL_MAC` | MAC to wake in Samba mode. |
+| `WOL_BROADCAST` | Destination for the magic packet. Default `255.255.255.255`. Some networks need the subnet broadcast, e.g. `192.168.1.255`. |
+| `WOL_PORT` | UDP port (default `9`). Packets are also sent to port `7`. |
+| `WOL_WAIT_SECONDS` | How long to wait for the PC after the packet (default `90`). |
+| `WOL_POLL_SECONDS` | Seconds between reachability checks (default `3`). |
+| `WOL_READY_GRACE_SECONDS` | Extra wait after the host answers, so SMB/the spooler can finish starting (default `8`). |
+
+On the Windows PC:
+
+1. BIOS: enable Wake on LAN / PME.
+2. Device Manager → the **Ethernet** adapter → Power Management: allow the device to wake the computer, and only with a magic packet.
+3. Adapter advanced properties: **Wake on Magic Packet** = Enabled.
+4. Use **Sleep**, not Hibernate or Shut down. Hibernate usually will not wake.
+5. The bot machine must be on the same LAN (broadcast must reach the PC).
+
+When WoL is configured and the host is down, Telegram shows “Waking the PC…” before “Sending…”. If the host never answers, the print is aborted instead of sitting in CUPS.
+
 ### Example `config.env`
 
 **CUPS:**
@@ -89,6 +114,8 @@ PRINTERS=xerox,office_hp
 DEFAULT_PRINTER=xerox
 USE_SAMBA=false
 ALLOWED_USER_IDS=123456789
+# WOL_MACS=xerox=AA:BB:CC:DD:EE:FF
+# WOL_HOSTS=xerox=192.168.1.10
 ```
 
 **Samba:**
@@ -116,7 +143,7 @@ Keep `config.env` out of version control (it is listed in `.gitignore`). Restric
 3. **Confirmation flow**
    - Send a PDF or image to the bot.
    - The bot replies with the current printer and inline buttons: **Print** or **Cancel**.
-   - On **Print**, the file is sent to the currently selected printer (CUPS or Samba). For CUPS, the bot checks the queue first and watches the job for a few seconds, so an unreachable or disabled printer is reported in Telegram instead of looking successful.
+   - On **Print**, if Wake-on-LAN is configured for that printer, the bot sends a magic packet and waits until the Windows host is reachable. Then the file is sent to the currently selected printer (CUPS or Samba). For CUPS, the bot checks the queue first and watches the job for a few seconds, so an unreachable or disabled printer is reported in Telegram instead of looking successful. If CUPS had disabled the queue after a previous CIFS failure, the bot tries `cupsenable` / `cupsaccept` after a successful wake.
    - On **Cancel**, the pending job is discarded.
 
 4. **PDF protection** — Password-protected PDFs or PDFs with printing disabled are rejected. The user is asked to unlock the file and send it again.
@@ -183,4 +210,6 @@ The service is configured with `Restart=always` and `RestartSec=10`, so it resta
 | Print fails (CUPS) | `lpstat -p` / `lpstat -o`; name is in `PRINTERS`; user in `lp` group if required. The bot refuses when the queue is disabled, not accepting, or reports an error such as `Unable to connect to CIFS host`. |
 | Wrong printer | `/printer` sets the destination for everyone; check `selected_printer` if it keeps reverting |
 | Print fails (Samba) | Host reachable; share/credentials correct; `smbclient` installed |
+| PC is asleep / WoL does nothing | Ethernet (not Wi‑Fi); BIOS + NIC Wake on Magic Packet; Sleep not Hibernate; `WOL_MACS` is the **PC** MAC; bot and PC on the same LAN; try `WOL_BROADCAST=192.168.x.255` |
+| Queue stays disabled after wake | Bot user may need `lpadmin` for `cupsenable` / `cupsaccept` (`sudo usermod -aG lpadmin <user>` then restart) |
 | Protected PDF | Remove password or print restrictions before sending |
