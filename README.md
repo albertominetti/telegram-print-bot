@@ -157,6 +157,34 @@ Keep `config.env` out of version control (it is listed in `.gitignore`). Restric
 
 7. **Polling** — The bot uses long polling against the Telegram API (no webhook or inbound port required).
 
+### Print flow
+
+Images skip the PDF-permission check and are converted to PDF after you confirm; from **Print** onward they follow the same path.
+
+```mermaid
+flowchart TD
+  send[Send PDF] --> auth{User allowed?}
+  auth -->|no| unauth[Unauthorized]
+  auth -->|yes| dl[Download and check PDF]
+  dl --> blocked{Password or no print permission?}
+  blocked -->|yes| reject[Reject]
+  blocked -->|no| ask[Ask Print or Cancel]
+  ask --> cancel[Cancel: delete file]
+  ask --> confirm[Tap Print]
+  confirm --> wol{MAC configured?}
+  wol -->|no| cups[Submit to CUPS or Samba]
+  wol -->|yes| up{PC already up?}
+  up -->|yes| recover[Maybe cupsenable]
+  up -->|no| packet[Magic packet and wait]
+  packet --> woke{Host up in time?}
+  woke -->|no| failWake[Fail: could not wake]
+  woke -->|yes| recover
+  recover --> cups
+  cups --> watch[Watch CUPS job]
+  watch --> ok[Success message]
+  watch --> fail[Error message]
+```
+
 ## systemd service
 
 A unit file is included: `telegram-print-bot.service`.
