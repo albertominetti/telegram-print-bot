@@ -85,8 +85,8 @@ If a Windows PC that **shares** the printer is often asleep, the bot can send a 
 
 | Variable | Description |
 |----------|-------------|
-| `WOL_MACS` | Ethernet MAC of the PC to wake. Parallel to `PRINTERS` (empty slot = skip), or `name=MAC` pairs, e.g. `xerox=AA:BB:CC:DD:EE:FF`. |
-| `WOL_HOSTS` | IP/hostname used to detect that the PC is up (TCP 445 / 139, then ping). Parallel to `PRINTERS` or `name=host`. If omitted, the bot uses `lpstat -v` for CUPS, or `SAMBA_HOST` in Samba mode. |
+| `WOL_MACS` | Ethernet MAC of the PC to wake. Comma-separated, **same order as `PRINTERS`** (empty slot = skip), e.g. `AA:BB:CC:DD:EE:FF,11:22:33:44:55:66`. Or `name=MAC` pairs, e.g. `xerox=AA:BB:CC:DD:EE:FF,office_hp=11:22:33:44:55:66`. |
+| `WOL_HOSTS` | IP/hostname used to detect that the PC is up (TCP 445 / 139, then ping). Same CSV rules as `WOL_MACS`, e.g. `192.168.1.10,192.168.1.20`. If omitted, the bot uses `lpstat -v` for CUPS, or `SAMBA_HOST` in Samba mode. |
 | `SAMBA_WOL_MAC` | MAC to wake in Samba mode. |
 | `WOL_BROADCAST` | Destination for the magic packet. Default `255.255.255.255`. Some networks need the subnet broadcast, e.g. `192.168.1.255`. |
 | `WOL_PORT` | UDP port (default `9`). Packets are also sent to port `7`. |
@@ -114,8 +114,9 @@ PRINTERS=xerox,office_hp
 DEFAULT_PRINTER=xerox
 USE_SAMBA=false
 ALLOWED_USER_IDS=123456789
-# WOL_MACS=xerox=AA:BB:CC:DD:EE:FF
-# WOL_HOSTS=xerox=192.168.1.10
+# Wake-on-LAN: same order as PRINTERS. Empty slot = skip that printer.
+# WOL_MACS=AA:BB:CC:DD:EE:FF,11:22:33:44:55:66
+# WOL_HOSTS=192.168.1.10,192.168.1.20
 ```
 
 **Samba:**
