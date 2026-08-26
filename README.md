@@ -144,7 +144,7 @@ Keep `config.env` out of version control (it is listed in `.gitignore`). Restric
 3. **Confirmation flow**
    - Send a PDF or image to the bot.
    - The bot replies with the current printer and inline buttons: **Print** or **Cancel**.
-   - On **Print**, if Wake-on-LAN is configured for that printer, the bot sends a magic packet and waits until the Windows host is reachable. Then the file is sent to the currently selected printer (CUPS or Samba). For CUPS, the bot checks the queue first and watches the job for a few seconds, so an unreachable or disabled printer is reported in Telegram instead of looking successful. If CUPS had disabled the queue after a previous CIFS failure, the bot tries `cupsenable` / `cupsaccept` after a successful wake.
+   - On **Print**, if Wake-on-LAN is configured for that printer, the bot sends a magic packet and waits until the Windows host is reachable. Then the file is sent to the currently selected printer (CUPS or Samba). For CUPS, the bot probes the SMB/Windows host (TCP 445) before submitting: if that PC is asleep or off, Telegram gets an error instead of a fake success. A leftover CUPS line such as `Unable to connect to CIFS host` is **not** treated as a current failure when the host is up again — the bot tries `cupsenable` / `cupsaccept` and submits. It then watches the CUPS job until it **completes or aborts**, not merely until `lpstat` says `now printing`. If CUPS had disabled the queue after a previous CIFS failure, the same recover step runs after a successful wake.
    - On **Cancel**, the pending job is discarded.
 
 4. **PDF protection** — Password-protected PDFs or PDFs with printing disabled are rejected. The user is asked to unlock the file and send it again.
@@ -172,15 +172,17 @@ flowchart TD
   ask --> cancel[Cancel: delete file]
   ask --> confirm[Tap Print]
   confirm --> wol{MAC configured?}
-  wol -->|no| cups[Submit to CUPS or Samba]
+  wol -->|no| host{SMB host up?}
   wol -->|yes| up{PC already up?}
   up -->|yes| recover[Maybe cupsenable]
   up -->|no| packet[Magic packet and wait]
   packet --> woke{Host up in time?}
   woke -->|no| failWake[Fail: could not wake]
   woke -->|yes| recover
-  recover --> cups
-  cups --> watch[Watch CUPS job]
+  host -->|no| failHost[Fail: PC unreachable]
+  host -->|yes| recover
+  recover --> cups[Submit to CUPS or Samba]
+  cups --> watch[Watch CUPS job until complete]
   watch --> ok[Success message]
   watch --> fail[Error message]
 ```
@@ -236,7 +238,7 @@ The service is configured with `Restart=always` and `RestartSec=10`, so it resta
 |-------|-----------------|
 | Bot does not start | `TELEGRAM_BOT_TOKEN` set in `config.env`; `journalctl -u telegram-print-bot` for errors |
 | Unauthorized | Your Telegram user ID is in `ALLOWED_USER_IDS` |
-| Print fails (CUPS) | `lpstat -p` / `lpstat -o`; name is in `PRINTERS`; user in `lp` group if required. The bot refuses when the queue is disabled, not accepting, or reports an error such as `Unable to connect to CIFS host`. |
+| Print fails (CUPS) | `lpstat -p` / `lpstat -o`; name is in `PRINTERS`; user in `lp` group if required. The bot refuses when the queue is disabled/stopped/not accepting, or when the Windows/SMB host does not answer. A leftover `Unable to connect to CIFS host` after the PC is back is ignored. |
 | Wrong printer | `/printer` sets the destination for everyone; check `selected_printer` if it keeps reverting |
 | Print fails (Samba) | Host reachable; share/credentials correct; `smbclient` installed |
 | PC is asleep / WoL does nothing | Ethernet (not Wi‑Fi); BIOS + NIC Wake on Magic Packet; Sleep not Hibernate; `WOL_MACS` is the **PC** MAC; bot and PC on the same LAN; try `WOL_BROADCAST=192.168.x.255` |

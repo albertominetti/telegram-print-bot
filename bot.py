@@ -176,6 +176,27 @@ class CupsPrinterState:
     connectivity_error: bool = False
 
 
+@dataclass
+class CupsJobState:
+    job_id: str
+    status: str = ""
+    alerts: str = ""
+
+    def outcome(self) -> bool | None:
+        """True if CUPS marked the job successful, False if it failed, else None."""
+        alerts = self.alerts.lower()
+        if "job-completed-successfully" in alerts:
+            return True
+        if any(
+            token in alerts
+            for token in ("aborted", "canceled", "cancelled", "with-errors")
+        ):
+            return False
+        if self.status and _looks_like_cups_error(self.status):
+            return False
+        return None
+
+
 @dataclass(frozen=True)
 class WolTarget:
     name: str
@@ -394,12 +415,61 @@ def inspect_cups_printer(printer: str) -> CupsPrinterState:
     )
 
 
-def cups_job_queued(job_id: str) -> bool:
+def parse_lpstat_job_listings(text: str) -> dict[str, CupsJobState]:
+    """Parse `lpstat -l` output into job_id → status/alerts."""
+    jobs: dict[str, CupsJobState] = {}
+    current: CupsJobState | None = None
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        if not raw[:1].isspace():
+            job_id = raw.split(None, 1)[0]
+            if not job_id:
+                current = None
+                continue
+            current = CupsJobState(job_id=job_id)
+            jobs[job_id] = current
+            continue
+        if current is None:
+            continue
+        stripped = raw.strip()
+        low = stripped.lower()
+        if low.startswith("status:"):
+            current.status = stripped.split(":", 1)[1].strip()
+        elif low.startswith("alerts:"):
+            current.alerts = stripped.split(":", 1)[1].strip()
+    return jobs
+
+
+def inspect_cups_job(job_id: str) -> CupsJobState | None:
+    found: CupsJobState | None = None
+    for which in ("not-completed", "completed"):
+        try:
+            result = run_cmd(["lpstat", "-l", "-W", which])
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning("Could not list CUPS %s jobs: %s", which, exc)
+            continue
+        jobs = parse_lpstat_job_listings(result.stdout or "")
+        if job_id in jobs:
+            found = jobs[job_id]
+            if which == "completed" or found.outcome() is not None:
+                return found
+    return found
+
+
+def cups_job_queued(job_id: str) -> bool | None:
+    """True if still in the queue, False if not, None if lpstat failed."""
     try:
         result = run_cmd(["lpstat", "-W", "not-completed"])
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.warning("Could not list CUPS jobs: %s", exc)
-        return False
+        return None
+    if result.returncode != 0:
+        logger.warning(
+            "Could not list CUPS jobs: %s",
+            (result.stderr or result.stdout or "").strip(),
+        )
+        return None
     return any(line.split(None, 1)[:1] == [job_id] for line in (result.stdout or "").splitlines())
 
 
@@ -415,39 +485,91 @@ def cancel_cups_job(job_id: str) -> None:
         logger.warning("Failed to cancel job %s: %s", job_id, exc)
 
 
+def _job_finished_result(
+    printer: str,
+    job_id: str,
+    state: CupsPrinterState,
+) -> tuple[bool, str] | None:
+    """Return a result if the CUPS job has left the queue, else None."""
+    job: CupsJobState | None = None
+    for _ in range(3):
+        job = inspect_cups_job(job_id)
+        if job is not None:
+            break
+        time.sleep(0.4)
+
+    if job is not None:
+        outcome = job.outcome()
+        if outcome is False:
+            detail = job.status or job.alerts or "job failed"
+            logger.warning("CUPS job %s failed: %s", job_id, detail)
+            return False, detail
+        if outcome is True:
+            logger.info("CUPS job %s completed on %s", job_id, printer)
+            return True, f"Printed on {printer} ({job_id})."
+
+    if state.problem:
+        logger.warning("CUPS job %s gone with printer error: %s", job_id, state.problem)
+        return False, state.problem
+    if job is None and state.connectivity_error:
+        logger.warning(
+            "CUPS job %s gone; queue reports %s", job_id, state.extra_msg,
+        )
+        return False, state.extra_msg or "Printer is unreachable."
+    logger.info("CUPS job %s left the queue without a job-level result", job_id)
+    return True, f"Printed on {printer} ({job_id})."
+
+
 def watch_cups_job(printer: str, job_id: str | None) -> tuple[bool, str]:
-    """Wait until the job prints, vanishes, or the queue reports a failure."""
+    """Wait until the job completes, fails, or the share host goes down."""
     deadline = time.monotonic() + JOB_WATCH_SECONDS
     last_problem: str | None = None
+    host = cups_probe_host(printer)
 
     while time.monotonic() < deadline:
         state = inspect_cups_printer(printer)
-        queued = cups_job_queued(job_id) if job_id else False
+        queued = cups_job_queued(job_id) if job_id else None
         last_problem = state.problem
 
-        if job_id and not queued:
-            if state.problem:
-                logger.warning("CUPS job %s gone with printer error: %s", job_id, state.problem)
-                return False, state.problem
-            logger.info("CUPS job %s left the queue (printed or completed)", job_id)
-            return True, f"Printed on {printer} ({job_id})."
+        if job_id and queued is False:
+            finished = _job_finished_result(printer, job_id, state)
+            if finished is not None:
+                return finished
 
-        # Stale "Unable to connect to CIFS host" on an enabled queue is not
-        # enough to cancel — that is common after a sleeping Windows host.
+        # Stale CIFS text on an enabled queue is not a reason to cancel.
         if state.problem:
             if job_id:
                 cancel_cups_job(job_id)
             logger.warning("CUPS job %s aborted: %s", job_id, state.problem)
             return False, state.problem
 
+        if host and not host_is_ready(host):
+            if job_id:
+                cancel_cups_job(job_id)
+            msg = f"PC {host} is not reachable."
+            logger.warning("CUPS job %s aborted: %s", job_id, msg)
+            return False, msg
+
         if job_id and state.printing == job_id:
-            logger.info("CUPS job %s is printing on %s", job_id, printer)
-            return True, f"Printing on {printer} ({job_id})."
+            logger.info("CUPS job %s still printing on %s; waiting for completion", job_id, printer)
 
         time.sleep(JOB_WATCH_POLL)
 
-    if job_id and cups_job_queued(job_id):
+    queued = cups_job_queued(job_id) if job_id else None
+    if job_id and queued is False:
+        return _job_finished_result(printer, job_id, inspect_cups_printer(printer)) or (
+            True,
+            f"Printed on {printer} ({job_id}).",
+        )
+
+    if job_id and queued:
         state = inspect_cups_printer(printer)
+        if host and not host_is_ready(host):
+            cancel_cups_job(job_id)
+            return False, f"PC {host} is not reachable."
+        if state.problem:
+            cancel_cups_job(job_id)
+            return False, state.problem
         if state.printing == job_id:
             return True, f"Printing on {printer} ({job_id})."
         if state.printing and state.printing != job_id:
@@ -456,11 +578,14 @@ def watch_cups_job(printer: str, job_id: str | None) -> tuple[bool, str]:
                 job_id, state.printing, printer,
             )
             return True, f"Queued on {printer} behind {state.printing} ({job_id})."
-        if job_id:
-            cancel_cups_job(job_id)
+        cancel_cups_job(job_id)
         detail = state.problem or last_problem or f"job {job_id} did not start printing"
         logger.warning("CUPS job %s did not start: %s", job_id, detail)
         return False, f"Printer {printer} did not start printing ({detail})."
+
+    if job_id and queued is None:
+        logger.warning("CUPS job %s status unknown after watch", job_id)
+        return False, f"Could not confirm whether job {job_id} printed."
 
     return True, f"Sent to {printer}."
 
@@ -472,6 +597,21 @@ def print_via_cups(
     ignore_unreachable: bool = False,
 ) -> tuple[bool, str]:
     state = inspect_cups_printer(printer)
+    host = cups_probe_host(printer)
+
+    if host and not host_is_ready(host):
+        msg = f"PC {host} is not reachable."
+        logger.warning("CUPS pre-check failed printer=%s: %s", printer, msg)
+        return False, msg
+
+    if state.connectivity_error:
+        logger.info(
+            "CUPS queue has leftover error printer=%s host=%s extra=%r; recovering",
+            printer, host or "unknown", state.extra_msg,
+        )
+        recover_cups_queue(printer)
+        state = inspect_cups_printer(printer)
+
     if state.problem:
         if not (ignore_unreachable and state.connectivity_error):
             logger.warning("CUPS pre-check failed printer=%s: %s", printer, state.problem)
@@ -480,10 +620,6 @@ def print_via_cups(
             "CUPS pre-check ignored connectivity problem printer=%s: %s",
             printer, state.problem,
         )
-    elif state.connectivity_error and not ignore_unreachable:
-        msg = f"Printer {printer} is unreachable: {state.extra_msg}"
-        logger.warning("CUPS pre-check failed printer=%s: %s", printer, msg)
-        return False, msg
 
     try:
         logger.info("CUPS submit printer=%s path=%s", printer, pdf_path)
@@ -596,8 +732,8 @@ def _assignment_map(raw: str, names: tuple[str, ...], label: str) -> dict[str, s
     return {name: value for name, value in zip(names, values) if value}
 
 
-def cups_device_host(printer: str) -> str | None:
-    """Best-effort host from `lpstat -v` (smb://, ipp://, socket://)."""
+def cups_device_uri(printer: str) -> str | None:
+    """Device URI from `lpstat -v` (smb://, ipp://, socket://)."""
     try:
         result = run_cmd(["lpstat", "-v", printer])
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -609,13 +745,37 @@ def cups_device_host(printer: str) -> str | None:
         if not text.lower().startswith(prefix.lower()):
             continue
         uri = text[len(prefix):].strip()
-        parsed = urlparse(uri)
-        if parsed.hostname:
-            return parsed.hostname
-        path = (parsed.path or "").strip("/")
-        if path:
-            return path.split("/", 1)[0] or None
+        return uri or None
     return None
+
+
+def _host_from_device_uri(uri: str) -> str | None:
+    parsed = urlparse(uri)
+    if parsed.hostname:
+        return parsed.hostname
+    path = (parsed.path or "").strip("/")
+    if path:
+        return path.split("/", 1)[0] or None
+    return None
+
+
+def cups_device_host(printer: str) -> str | None:
+    """Best-effort host from `lpstat -v` (smb://, ipp://, socket://)."""
+    uri = cups_device_uri(printer)
+    return _host_from_device_uri(uri) if uri else None
+
+
+def cups_probe_host(printer: str) -> str | None:
+    """Windows/SMB host we can probe before printing, if the queue has one."""
+    target = WOL_BY_NAME.get(printer)
+    if target and target.host:
+        return target.host
+    uri = cups_device_uri(printer)
+    if not uri:
+        return None
+    if urlparse(uri).scheme.lower() not in {"smb", "cifs"}:
+        return None
+    return _host_from_device_uri(uri)
 
 
 def build_wol_targets() -> dict[str, WolTarget]:
@@ -713,7 +873,7 @@ def recover_cups_queue(printer: str) -> None:
                     (result.stderr or result.stdout or "").strip(),
                 )
             else:
-                logger.info("Ran %s after Wake-on-LAN", " ".join(args))
+                logger.info("Ran %s to recover the CUPS queue", " ".join(args))
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.warning("Could not run %s: %s", " ".join(args), exc)
 
