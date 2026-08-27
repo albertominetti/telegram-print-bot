@@ -4,13 +4,12 @@ A Telegram bot that receives PDFs and images, asks for confirmation, and sends t
 
 ## Prerequisites
 
-- **Linux-like OS** (Raspberry too)
 - **Python 3.14+**
 - **[uv](https://docs.astral.sh/uv/)** (recommended) or another way to create a virtualenv and install dependencies
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - System tools used at runtime:
-  - **CUPS mode:** (`cups-client` on Debian/Ubuntu)
-  - **Samba mode:** (`smbclient` package)
+  - **CUPS mode:** `lp` (`cups-client` on Debian/Ubuntu)
+  - **Samba mode:** `smbclient` (`smbclient` package)
   - **PDF checks:** handled in Python via `pikepdf` (no extra system packages)
 
 On Debian/Ubuntu:
@@ -67,7 +66,8 @@ You must also configure **one** print backend:
 
 | Variable | Description |
 |----------|-------------|
-| `CUPS_PRINTER_NAME` | CUPS queue name (see `lpstat -p` or `lpstat -a`). |
+| `PRINTERS` | Comma-separated CUPS queue names (see `lpstat -p` or `lpstat -a`). Any authorized user can pick one with `/printer`; that choice applies to **everyone**. |
+| `DEFAULT_PRINTER` | Queue used until someone runs `/printer`. Defaults to the first name in `PRINTERS`. Must be one of the listed names. |
 
 **Samba** — set `USE_SAMBA=true` and all of:
 
@@ -85,7 +85,8 @@ You must also configure **one** print backend:
 
 ```env
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-CUPS_PRINTER_NAME=MyPrinter
+PRINTERS=xerox,office_hp
+DEFAULT_PRINTER=xerox
 USE_SAMBA=false
 ALLOWED_USER_IDS=123456789
 ```
@@ -114,15 +115,17 @@ Keep `config.env` out of version control (it is listed in `.gitignore`). Restric
 
 3. **Confirmation flow**
    - Send a PDF or image to the bot.
-   - The bot replies with inline buttons: **Print** or **Cancel**.
-   - On **Print**, the file is sent to the configured printer (CUPS or Samba).
+   - The bot replies with the current printer and inline buttons: **Print** or **Cancel**.
+   - On **Print**, the file is sent to the currently selected printer (CUPS or Samba). For CUPS, the bot checks the queue first and watches the job for a few seconds, so an unreachable or disabled printer is reported in Telegram instead of looking successful.
    - On **Cancel**, the pending job is discarded.
 
 4. **PDF protection** — Password-protected PDFs or PDFs with printing disabled are rejected. The user is asked to unlock the file and send it again.
 
-5. **Commands** — `/start` shows a short welcome message.
+5. **Commands** — registered with Telegram on startup (the `/` menu in the chat):
+   - `/start` shows a short welcome message.
+   - `/printer` (CUPS) lists the queues from `PRINTERS`. Tapping one sets the printer **for every user**. The choice is written to `selected_printer` next to the bot so it survives restarts. Samba mode has a single share, so `/printer` only reports that name.
 
-6. **Logging** — INFO-level logs go to stdout/stderr (journal when run under systemd). HTTP client noise from `httpx` is suppressed.
+6. **Logging** — INFO-level logs go to stdout/stderr (journal when run under systemd). Each print request is logged from receive → confirm/cancel → CUPS/Samba result, with user id, file name, size, and printer. HTTP client noise from `httpx` is suppressed.
 
 7. **Polling** — The bot uses long polling against the Telegram API (no webhook or inbound port required).
 
@@ -177,6 +180,7 @@ The service is configured with `Restart=always` and `RestartSec=10`, so it resta
 |-------|-----------------|
 | Bot does not start | `TELEGRAM_BOT_TOKEN` set in `config.env`; `journalctl -u telegram-print-bot` for errors |
 | Unauthorized | Your Telegram user ID is in `ALLOWED_USER_IDS` |
-| Print fails (CUPS) | `lpstat -p`; printer name matches `CUPS_PRINTER_NAME`; user in `lp` group if required |
+| Print fails (CUPS) | `lpstat -p` / `lpstat -o`; name is in `PRINTERS`; user in `lp` group if required. The bot refuses when the queue is disabled, not accepting, or reports an error such as `Unable to connect to CIFS host`. |
+| Wrong printer | `/printer` sets the destination for everyone; check `selected_printer` if it keeps reverting |
 | Print fails (Samba) | Host reachable; share/credentials correct; `smbclient` installed |
 | Protected PDF | Remove password or print restrictions before sending |
