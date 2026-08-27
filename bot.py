@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram → PDF → Windows Shared Printer Bot
+Telegram → PDF → CUPS printer bot.
 User sends a PDF → bot asks to confirm → prints on button tap.
 """
 
@@ -86,16 +86,9 @@ PRINTERS = _csv_env("PRINTERS")
 _default_printer = (os.environ.get("DEFAULT_PRINTER") or "").strip()
 DEFAULT_PRINTER = _default_printer or (PRINTERS[0] if PRINTERS else None)
 
-USE_SAMBA = (os.environ.get("USE_SAMBA") or "").lower() in {"1", "true", "yes"}
-SAMBA_HOST = os.environ.get("SAMBA_HOST")
-SAMBA_SHARE = os.environ.get("SAMBA_SHARE")
-SAMBA_USER = os.environ.get("SAMBA_USER")
-SAMBA_PASSWORD = os.environ.get("SAMBA_PASSWORD")
-
 # Wake-on-LAN. WOL_MACS is either parallel to PRINTERS or name=MAC pairs.
 _WOL_MACS_RAW = (os.environ.get("WOL_MACS") or "").strip()
 _WOL_HOSTS_RAW = (os.environ.get("WOL_HOSTS") or "").strip()
-SAMBA_WOL_MAC = (os.environ.get("SAMBA_WOL_MAC") or "").strip()
 WOL_BROADCAST = (os.environ.get("WOL_BROADCAST") or "255.255.255.255").strip()
 WOL_PORT = _int_env("WOL_PORT", 9, minimum=1)
 WOL_WAIT_SECONDS = _int_env("WOL_WAIT_SECONDS", 90, minimum=0)
@@ -271,8 +264,6 @@ def _save_selected_printer(name: str) -> None:
 
 
 def get_selected_printer() -> str | None:
-    if USE_SAMBA:
-        return SAMBA_SHARE
     if _selected_printer in PRINTERS:
         return _selected_printer
     return DEFAULT_PRINTER
@@ -643,38 +634,7 @@ def print_via_cups(
         return False, str(exc)
 
 
-def print_via_samba(pdf_path: str) -> tuple[bool, str]:
-    try:
-        logger.info("Samba submit host=%s share=%s path=%s", SAMBA_HOST, SAMBA_SHARE, pdf_path)
-        result = run_cmd(
-            [
-                "smbclient", f"//{SAMBA_HOST}/{SAMBA_SHARE}",
-                "-U", f"{SAMBA_USER}%{SAMBA_PASSWORD}",
-                "-c", f'print "{pdf_path}"',
-            ],
-            timeout=PRINT_TIMEOUT,
-        )
-        out = result.stdout.strip()
-        err = result.stderr.strip()
-        if result.returncode == 0:
-            logger.info("Samba accepted share=%s rc=0", SAMBA_SHARE)
-            return True, "Sent via smbclient."
-        logger.warning(
-            "Samba rejected share=%s rc=%s stdout=%r stderr=%r",
-            SAMBA_SHARE, result.returncode, out, err,
-        )
-        return False, err or out
-    except subprocess.TimeoutExpired:
-        logger.warning("Samba timed out share=%s after %ss", SAMBA_SHARE, PRINT_TIMEOUT)
-        return False, "smbclient timed out."
-    except OSError as exc:
-        logger.warning("Samba error share=%s: %s", SAMBA_SHARE, exc)
-        return False, str(exc)
-
-
 def print_pdf(pdf_path: str, *, ignore_unreachable: bool = False) -> tuple[bool, str]:
-    if USE_SAMBA:
-        return print_via_samba(pdf_path)
     printer = get_selected_printer()
     if not printer:
         return False, "No printer selected."
@@ -779,23 +739,6 @@ def cups_probe_host(printer: str) -> str | None:
 
 
 def build_wol_targets() -> dict[str, WolTarget]:
-    if USE_SAMBA:
-        mac_str = SAMBA_WOL_MAC
-        if not mac_str and _WOL_MACS_RAW and "=" not in _WOL_MACS_RAW and "," not in _WOL_MACS_RAW:
-            mac_str = _WOL_MACS_RAW
-        if not mac_str:
-            return {}
-        if not SAMBA_SHARE:
-            raise ValueError("SAMBA_WOL_MAC requires SAMBA_SHARE")
-        host = (SAMBA_HOST or "").strip() or None
-        return {
-            SAMBA_SHARE: WolTarget(
-                name=SAMBA_SHARE,
-                mac=parse_mac(mac_str),
-                host=host,
-            )
-        }
-
     macs = _assignment_map(_WOL_MACS_RAW, PRINTERS, "WOL_MACS")
     hosts = _assignment_map(_WOL_HOSTS_RAW, PRINTERS, "WOL_HOSTS")
     targets: dict[str, WolTarget] = {}
@@ -815,8 +758,6 @@ def resolve_wol_target(printer: str | None) -> WolTarget | None:
     if target is None:
         return None
     if target.host:
-        return target
-    if USE_SAMBA:
         return target
     host = cups_device_host(printer)
     if host:
@@ -1074,7 +1015,7 @@ async def print_job(
                 )
                 return
             ignore_unreachable = True
-            if not USE_SAMBA and printer:
+            if printer:
                 await asyncio.to_thread(recover_cups_queue, printer)
             logger.info(
                 "Print host ready %s printer=%s wol=%s",
@@ -1142,13 +1083,6 @@ async def printer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.warning("Unauthorized /printer from user_id=%s", user.id)
         await update.message.reply_text(
             f"⛔ You are not authorized to use this bot.\nYour Telegram user ID: `{user.id}`",
-            parse_mode="Markdown",
-        )
-        return
-
-    if USE_SAMBA:
-        await update.message.reply_text(
-            f"Samba mode uses a single shared printer: `{md(SAMBA_SHARE or 'unset')}`",
             parse_mode="Markdown",
         )
         return
@@ -1265,9 +1199,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if query.data.startswith("printer:"):
-        if USE_SAMBA:
-            await query.edit_message_text("Samba mode uses a single shared printer.")
-            return
         try:
             index = int(query.data.split(":", 1)[1])
             name = PRINTERS[index]
@@ -1327,15 +1258,14 @@ def main() -> None:
             "Set ALLOWED_USER_IDS (comma-separated Telegram user IDs). "
             "Without it, every user is rejected."
         )
-    if not USE_SAMBA:
-        if not PRINTERS:
-            raise ValueError(
-                "Set PRINTERS (comma-separated CUPS queue names)."
-            )
-        if _default_printer and _default_printer not in PRINTERS:
-            raise ValueError(
-                f"DEFAULT_PRINTER={_default_printer!r} is not in PRINTERS."
-            )
+    if not PRINTERS:
+        raise ValueError(
+            "Set PRINTERS (comma-separated CUPS queue names)."
+        )
+    if _default_printer and _default_printer not in PRINTERS:
+        raise ValueError(
+            f"DEFAULT_PRINTER={_default_printer!r} is not in PRINTERS."
+        )
 
     global WOL_BY_NAME
     WOL_BY_NAME = build_wol_targets()
@@ -1355,7 +1285,7 @@ def main() -> None:
     logger.info(
         "Bot started. Allowed users: %s. Printers: %s. Selected: %s. Wake-on-LAN: %s",
         sorted(ALLOWED_USER_IDS),
-        list(PRINTERS) if not USE_SAMBA else [SAMBA_SHARE],
+        list(PRINTERS),
         current_printer_label(),
         wol_desc or "off",
     )
