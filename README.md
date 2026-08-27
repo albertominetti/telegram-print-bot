@@ -72,13 +72,33 @@ If a Windows PC that **shares** the printer is often asleep, the bot can send a 
 
 | Variable | Description |
 |----------|-------------|
-| `WOL_MACS` | Ethernet MAC of the PC to wake. Comma-separated, **same order as `PRINTERS`** (empty slot = skip), e.g. `AA:BB:CC:DD:EE:FF,11:22:33:44:55:66`. Or `name=MAC` pairs, e.g. `xerox=AA:BB:CC:DD:EE:FF,office_hp=11:22:33:44:55:66`. |
-| `WOL_HOSTS` | IP/hostname used to detect that the PC is up (TCP 445 / 139, then ping). Same CSV rules as `WOL_MACS`, e.g. `192.168.1.10,192.168.1.20`. If omitted, the bot uses the CUPS device URI (`lpstat -v`). |
+| `WOL_MACS` | Ethernet MAC of the PC to wake. See formats below. |
+| `WOL_HOSTS` | IP/hostname used to detect that the PC is up (TCP 445 / 139, then ping). Same formats as `WOL_MACS`. If omitted, the bot uses the CUPS device URI (`lpstat -v`). |
 | `WOL_BROADCAST` | Destination for the magic packet. Default `255.255.255.255`. Some networks need the subnet broadcast, e.g. `192.168.1.255`. |
 | `WOL_PORT` | UDP port (default `9`). Packets are also sent to port `7`. |
 | `WOL_WAIT_SECONDS` | How long to wait for the PC after the packet (default `90`). |
 | `WOL_POLL_SECONDS` | Seconds between reachability checks (default `3`). |
 | `WOL_READY_GRACE_SECONDS` | Extra wait after the host answers, so SMB/the spooler can finish starting (default `8`). |
+
+`WOL_MACS` and `WOL_HOSTS` accept **either** positional CSV **or** `name=value` pairs. Do not mix the two in the same variable (the bot refuses to start).
+
+**CSV**, same order as `PRINTERS`. Leave a slot empty (nothing between commas) to skip that printer — no MAC and no IP, so no Wake-on-LAN for a local USB queue:
+
+```env
+PRINTERS=ufficio,locale,sala
+WOL_MACS=AA:BB:CC:DD:EE:FF,,11:22:33:44:55:66
+WOL_HOSTS=192.168.1.10,,192.168.1.30
+```
+
+**Names with `=`**, matching a name in `PRINTERS`. Omit a printer entirely to skip it (same effect as an empty CSV slot):
+
+```env
+PRINTERS=ufficio,locale,sala
+WOL_MACS=ufficio=AA:BB:CC:DD:EE:FF,sala=11:22:33:44:55:66
+WOL_HOSTS=ufficio=192.168.1.10,sala=192.168.1.30
+```
+
+A trailing comma also skips the last name (`WOL_MACS=AA:BB:CC:DD:EE:FF,` wakes only the first printer). A name that is not in `PRINTERS` is ignored (warning in the log).
 
 On the Windows PC:
 
@@ -97,9 +117,12 @@ TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 PRINTERS=xerox,office_hp
 DEFAULT_PRINTER=xerox
 ALLOWED_USER_IDS=123456789
-# Wake-on-LAN: same order as PRINTERS. Empty slot = skip that printer.
+# CSV (same order as PRINTERS; empty slot = skip) or name=value. Do not mix.
 # WOL_MACS=AA:BB:CC:DD:EE:FF,11:22:33:44:55:66
 # WOL_HOSTS=192.168.1.10,192.168.1.20
+# Only the first printer: WOL_MACS=AA:BB:CC:DD:EE:FF,
+# WOL_MACS=xerox=AA:BB:CC:DD:EE:FF,office_hp=11:22:33:44:55:66
+# WOL_HOSTS=xerox=192.168.1.10,office_hp=192.168.1.20
 ```
 
 Keep `config.env` out of version control (it is listed in `.gitignore`). Restrict permissions: `chmod 600 config.env`.
