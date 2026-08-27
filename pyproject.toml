@@ -1,7 +1,7 @@
 [project]
 name = "telegram-print-bot"
 version = "0.1.0"
-description = "Telegram bot that prints received PDFs to a Windows shared printer"
+description = "Telegram bot that prints received PDFs to a CUPS printer"
 requires-python = ">=3.14"
 dependencies = [
     "python-telegram-bot==22.7",
